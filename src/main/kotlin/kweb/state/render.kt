@@ -7,16 +7,14 @@ import kweb.span
 import kweb.state.RenderState.*
 import mu.KotlinLogging
 import java.util.concurrent.atomic.AtomicReference
-import kotlin.collections.ArrayList
-import kotlin.collections.forEach
-import kotlin.collections.plusAssign
 
 /**
  * Created by ian on 6/18/17.
  */
 
 private val logger = KotlinLogging.logger {}
-object RenderSpanNames{
+
+object RenderSpanNames {
     const val startMarkerClassName = "rMStart"
     const val endMarkerClassName = "rMEnd"
     const val listStartMarkerClassName = "rLStart"
@@ -30,8 +28,46 @@ object RenderSpanNames{
 fun <T : Any?> ElementCreator<*>.render(
     value: KVal<T>,
     block: ElementCreator<Element>.(T) -> Unit
-) : RenderFragment {
+) = renderInternal(
+    addListener = { doOnAdded ->
+        value.addListener { _, _ ->
+            doOnAdded()
+        }
+    },
+    removeListener = { handle ->
+        value.removeListener(handle)
+    },
+    getValue = { value.value },
+    block = block
+)
 
+/**
+ * Render the value of a [ObservableList] into DOM elements, and automatically re-render those
+ * elements whenever any of the list values changes.
+ * Always prefer [renderEach] over [render] when working with [ObservableList].
+ *
+ * Use this when you want to update a simple layout based on the list values.
+ */
+fun <T : Any> ElementCreator<*>.render(
+    value: ObservableList<T>,
+    block: ElementCreator<*>.(ArrayList<T>) -> Unit
+) = renderInternal(
+    addListener = { doOnAdded ->
+        value.addListener { doOnAdded() }
+    },
+    removeListener = { handle ->
+        value.removeListener(handle)
+    },
+    getValue = { value.getItems() },
+    block = block
+)
+
+private fun <T> ElementCreator<*>.renderInternal(
+    addListener: (doOnAdded: () -> Unit) -> Long,
+    removeListener: (handle: Long) -> Unit,
+    getValue: () -> T,
+    block: ElementCreator<*>.(T) -> Unit
+): RenderFragment {
     val previousElementCreator: AtomicReference<ElementCreator<Element>?> = AtomicReference(null)
 
     val renderState = AtomicReference(NOT_RENDERING)
@@ -61,7 +97,7 @@ fun <T : Any?> ElementCreator<*>.render(
         renderState.set(RENDERING_NO_PENDING_CHANGE)
         val elementCreator = previousElementCreator.get()
         if (elementCreator != null) {
-            elementCreator.block(value.value)
+            elementCreator.block(getValue())
         } else {
             logger.error("previousElementCreator.get() was null in eraseAndRender()")
             //TODO This warning message could be made more helpful. I can't think of a situation where this could actually happen
@@ -86,21 +122,24 @@ fun <T : Any?> ElementCreator<*>.render(
         } while (renderState.get() != NOT_RENDERING)
     }
 
-    val listenerHandle = value.addListener { _, _ ->
+    val listenerHandle = addListener {
         when (renderState.get()) {
             NOT_RENDERING -> {
                 renderLoop()
             }
+
             RENDERING_NO_PENDING_CHANGE -> {
                 renderState.set(RENDERING_WITH_PENDING_CHANGE)
             }
+
             else -> {
                 // This space intentionally left blank
             }
         }
     }
+
     renderFragment.addDeletionListener {
-        value.removeListener(listenerHandle)
+        removeListener(listenerHandle)
     }
 
     //we have to make sure to call renderLoop to start the initial render and begin monitoring renderState
@@ -112,7 +151,7 @@ fun <T : Any?> ElementCreator<*>.render(
 
     this.onCleanup(true) {
         previousElementCreator.getAndSet(null)?.cleanup()
-        value.removeListener(listenerHandle)
+        removeListener(listenerHandle)
     }
 
     return renderFragment
@@ -131,7 +170,7 @@ fun ElementCreator<*>.closeOnElementCreatorCleanup(kv: KVal<*>) {
 @Deprecated("Use kweb.components.Component instead, see: https://docs.kweb.io/book/components.html")
 fun <PARENT_ELEMENT_TYPE : Element, RETURN_TYPE> ElementCreator<PARENT_ELEMENT_TYPE>.render(
     component: AdvancedComponent<PARENT_ELEMENT_TYPE, RETURN_TYPE>
-) : RETURN_TYPE {
+): RETURN_TYPE {
     return component.render(this)
 }
 
@@ -149,7 +188,7 @@ interface AdvancedComponent<in PARENT_ELEMENT_TYPE : Element, out RETURN_TYPE> {
      * Render this [Component] into DOM elements, returning an arbitrary
      * value of type [RETURN_TYPE].
      */
-    fun render(elementCreator: ElementCreator<PARENT_ELEMENT_TYPE>) : RETURN_TYPE
+    fun render(elementCreator: ElementCreator<PARENT_ELEMENT_TYPE>): RETURN_TYPE
 }
 
 /**
